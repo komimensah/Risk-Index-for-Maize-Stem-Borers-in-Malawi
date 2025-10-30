@@ -1,0 +1,393 @@
+#Chilo
+# ------------------------------------------------------------
+# CLEAR MEMORY AND CONSOLE
+# ------------------------------------------------------------
+rm(list = ls())
+cat("\014")
+
+# ------------------------------------------------------------
+# DEVELOPMENT RATES: Logan 1 (Model 17)
+# ------------------------------------------------------------
+egg.dev.rate <- function(x) {
+  Y = 0.015; Tmax = 38.916; p = 0.155; v = 5.766
+  r <- Y * (exp(p * x) - exp(p * Tmax - (Tmax - x)/v))
+  r[x < 0 | is.nan(r)] <- 0
+  return(pmax(r, 0))
+}
+
+larva.dev.rate <- function(x) {
+  Y = 0.003; Tmax = 37.581; p = 0.17; v = 5.504
+  r <- Y * (exp(p * x) - exp(p * Tmax - (Tmax - x)/v))
+  r[x < 0 | is.nan(r)] <- 0
+  return(pmax(r, 0))
+}
+
+pupa.dev.rate <- function(x) {
+  Y = 0.012; Tmax = 38.048; p = 0.165; v = 5.66
+  r <- Y * (exp(p * x) - exp(p * Tmax - (Tmax - x)/v))
+  r[x < 0 | is.nan(r)] <- 0
+  return(pmax(r, 0))
+}
+
+# ------------------------------------------------------------
+# MORTALITY RATES
+# ------------------------------------------------------------
+
+# Egg Mortality: Marc (Model 35)
+egg.mort.rate <- function(x){
+  a1 = 3.518; b1 = -0.183; a2 = -14.119; b2 = 0.416
+  m <- (1 - exp(-exp(a1 + b1 * x))) + (1 - exp(-exp(a2 + b2 * x)))
+  return(pmin(pmax(m, 0), 1))
+}
+
+# Larva Mortality: Gompertz (Model 6)
+larva.mort.rate <- function(x){
+  a1 = 5.537; b1 = -0.124; a2 = 0; b2 = 0.563
+  m <- a1 * exp(b1 * x) + a2 * exp(b2 * x)
+  return(pmin(pmax(m, 0), 1))
+}
+
+# Pupa Mortality: Wang 3 (Model 28)
+pupa.mort.rate <- function(x){
+  Topt = 28.084; Bl = 1.467; Bh = 0.878; H = 0.00001
+  term <- (1 + exp(-(x - Topt)/Bl)) * (1 + exp(-(Topt - x)/Bh)) * H
+  m <- 1 - 1 / term
+  m[is.nan(m) | is.infinite(m)] <- 1
+  return(pmin(pmax(m, 0), 1))
+}
+
+# Adult Mortality (Female): Hilbert & Logan 3 (Model 56)
+adult.mort.rate <- function(x){
+  trid = -632358.654; Tmax = 38.567; Tmin = 23.682; D = -584677784.227; Dt = 0.017; Smin = 0.09
+  r <- trid * (((x - Tmin)^2)/((x - Tmin)^2 + D) - exp(-(Tmax - (x - Tmin))/Dt)) + Smin
+  r[is.nan(r) | is.infinite(r)] <- 1
+  return(pmin(pmax(r, 0), 1))
+}
+
+# ------------------------------------------------------------
+# FECUNDITY FUNCTIONS
+# ------------------------------------------------------------
+
+# Total fecundity: Brière 2 (Model 40)
+fem.total.ovip <- function(x){
+  a = 0; To = -69.689; Tl = 39.639; d = 1.395
+  r <- exp(a * x * (x - To) * (Tl - x)^(1/d))
+  r[is.nan(r) | is.infinite(r)] <- 0
+  return(pmin(pmax(r, 0), 1))
+}
+
+# Convert total fecundity to daily oviposition rate
+fem.daily.ovip <- function(x){
+  total <- fem.total.ovip(x)
+  lifespan <- 1 / adult.mort.rate(x)
+  daily <- total / lifespan
+  daily[is.nan(daily) | daily < 0] <- 0
+  return(pmin(daily, 1))
+}
+
+
+# ------------------------------
+# Temperature‐response (Yan & Hunt style)
+# ------------------------------
+r_yan <- function(T, Rmax = 0.04545, Topt = 31.4, Tmax = 41) {
+  # If T is outside [0, Tmax], growth is zero
+  r <- ifelse(T < 0 | T > Tmax, 0,
+              Rmax * ((Tmax - T) / (Tmax - Topt)) *
+                ( (T / Topt)^( Topt / (Tmax - Topt) )) )
+  return(r)
+}
+risk.index_temp_resource <- function(Tvec,
+                                     larvae_reduction = 0.0,
+                                     egg_reduction    = 0.0) {
+  rvec <- rep(NA_real_, length(Tvec))
+  good <- !is.na(Tvec)
+  
+  if (any(good)) {
+    Tgood <- Tvec[good]
+    
+    gamma <- r_yan(Tgood)
+    gamma[is.nan(gamma) | gamma < 0] <- 0
+    D1 <- egg.dev.rate(Tgood)
+    D2 <- larva.dev.rate(Tgood)
+    D3 <- pupa.dev.rate(Tgood)
+    M1 <- egg.mort.rate(Tgood)
+    M2 <- larva.mort.rate(Tgood)
+    M3 <- pupa.mort.rate(Tgood)
+    M4 <- adult.mort.rate(Tgood)
+    phi <- fem.daily.ovip(Tgood)
+    
+    mu_R  <- 0.001
+    R_star <- gamma / mu_R
+    
+    # apply egg‑stage reduction (oviposition reduction)
+    if (egg_reduction > 0) {
+      phi <- phi * (1 - egg_reduction)
+    }
+    
+    # apply larval‑stage reduction (increase mortality)
+    if (larvae_reduction > 0) {
+      M2 <- M2 * (1 / (1 - larvae_reduction))
+    }
+    
+    R0_good <- phi * R_star * (D1 * D2 * D3) /
+      ((D1 + M1) * (D2 + M2) * (D3 + M3) * M4)
+    
+    R0_good[is.nan(R0_good) | R0_good < 0] <- 0
+    rvec[good] <- R0_good
+  }
+  
+  return(rvec)
+}
+
+# Example usage:
+temperature <- seq(10, 45, by = 0.1)
+
+R_I_baseline    <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.0,
+                                            egg_reduction    = 0.0)
+R_I_egg_ctrl    <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.0,
+                                            egg_reduction    = 0.50)
+R_I_larvae_ctrl <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.70,
+                                            egg_reduction    = 0.0)
+R_I_IPM         <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.70,
+                                            egg_reduction    = 0.50)
+
+# Plot all scenarios:
+plot(temperature, R_I_baseline,
+     type = "l", lwd = 2, col = "red",
+     xlab = "Temperature (°C)",
+     ylab = expression(italic(Chilo~partellus) ~ R[0]),
+     main = "")
+lines(temperature, R_I_egg_ctrl,
+      type = "l", lwd = 2, col = "orange")
+lines(temperature, R_I_larvae_ctrl,
+      type = "l", lwd = 2, col = "yellow")
+lines(temperature, R_I_IPM,
+      type = "l", lwd = 2, col = "lightgreen")
+abline(h = 1, lty = 2, col = "purple")
+legend("topright",
+       legend = c("Baseline",
+                  "50% Intercropping",
+                  "70% Biopesticide",
+                  "IPM: both controls"),
+       col    = c("red", "orange", "yellow", "lightgreen"),
+       lwd    = 2)
+scenarios <- list(
+  Baseline    = R_I_baseline,
+  EggControl  = R_I_egg_ctrl,
+  LarvaeControl = R_I_larvae_ctrl,
+  IPM         = R_I_IPM
+)
+
+for (nm in names(scenarios)) {
+  R0_vec <- scenarios[[nm]]
+  idx_above1 <- which(R0_vec > 1)
+  
+  if (length(idx_above1) > 0) {
+    min_t <- temperature[min(idx_above1)]
+    max_t <- temperature[max(idx_above1)]
+    peak_R0_val <- max(R0_vec, na.rm = TRUE)
+    peak_t <- temperature[which.max(R0_vec)]
+    
+    cat(nm, " — R₀ > 1 between:", round(min_t, 1), "°C and", round(max_t, 1), "°C; ",
+        "Peak R₀:", round(peak_R0_val, 2), "at", round(peak_t, 1), "°C\n")
+  } else {
+    cat(nm, " — R₀ never exceeds 1 in the evaluated temperature range.\n")
+  }
+}
+##########################Bussuola
+# Clear memory
+rm(list = ls())
+cat("\014")
+setwd("/Users/kagboka/Desktop/New_stemborer/")
+# ------------------------------------------------------------
+# DEVELOPMENT RATE FUNCTIONS
+# (these you already have)
+# ------------------------------------------------------------
+egg.dev.rate <- function(x) {
+  alph = 117.3314; k = 3474.168; b = 0.1303
+  Tmin = 4.5429; Tmax = 56.7699; Dt = 6.2207
+  r <- alph * (1 / (1 + k * exp(-b * (x - Tmin))) -
+                 exp(-(Tmax - (x - Tmin)) / Dt))
+  r[is.nan(r) | r < 0] <- 0
+  return(pmin(r, 1))
+}
+
+larva.dev.rate <- function(x) {
+  Y = 0.0012; Tmax = 31.2287; p = 0.1163; v = 1.6537
+  r <- Y * (exp(p * x) - exp((p * Tmax) - (Tmax - x) / v))
+  r[is.nan(r) | r < 0] <- 0
+  return(pmin(r, 1))
+}
+
+pupa.dev.rate <- function(x) {
+  Y = 0.006; Tmax = 33.0391; p = 0.1641; v = 5.2269
+  r <- Y * (exp(p * x) - exp((p * Tmax) - (Tmax - x) / v))
+  r[is.nan(r) | r < 0] <- 0
+  return(pmin(r, 1))
+}
+
+# ------------------------------------------------------------
+# MORTALITY RATE FUNCTIONS
+# ------------------------------------------------------------
+egg.mort.rate <- function(x) {
+  b1 = 5.0138; b2 = -0.4869; b3 = 0.01
+  m <- exp(b1 + b2 * x + b3 * x^2)
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+larva.mort.rate <- function(x) {
+  b1 = 3.8718; b2 = -0.3872; b3 = 0.0078
+  m <- exp(b1 + b2 * x + b3 * x^2)
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+pupa.mort.rate <- function(x) {
+  b1 = 7.6441; b2 = -0.7716; b3 = 0.0157
+  m <- exp(b1 + b2 * x + b3 * x^2)
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+female.mort.rate <- function(x) {
+  c1 = 79.0854; k1 = 8.1594; k2 = -0.073
+  m <- c1 / (1 + exp(k1 + k2 * x))
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+# ------------------------------------------------------------
+# FECUNDITY FUNCTIONS
+# ------------------------------------------------------------
+fem.tot.ovip <- function(x) {
+  b1 = -3.7017; b2 = 0.8449; b3 = -0.0188
+  r <- exp(b1 + b2 * x + b3 * x^2)
+  r[is.nan(r) | r < 0] <- 0
+  return(r)
+}
+
+fem.fec <- function(x) {
+  total_eggs <- fem.tot.ovip(x)
+  lifespan <- 1 / female.mort.rate(x)
+  fec <- total_eggs / lifespan
+  fec[is.nan(fec) | fec < 0] <- 0
+  return(fec)
+}
+# ------------------------------
+# Temperature‐response (Yan & Hunt style)
+# ------------------------------
+r_yan <- function(T, Rmax = 0.04545, Topt = 31.4, Tmax = 41) {
+  # If T is outside [0, Tmax], growth is zero
+  r <- ifelse(T < 0 | T > Tmax, 0,
+              Rmax * ((Tmax - T) / (Tmax - Topt)) *
+                ( (T / Topt)^( Topt / (Tmax - Topt) )) )
+  return(r)
+}
+risk.index_temp_resource <- function(Tvec,
+                                     larvae_reduction = 0.0,
+                                     egg_reduction    = 0.0) {
+  rvec <- rep(NA_real_, length(Tvec))
+  good <- !is.na(Tvec)
+  
+  if (any(good)) {
+    Tgood <- Tvec[good]
+    
+    gamma <- r_yan(Tgood)
+    gamma[is.nan(gamma) | gamma < 0] <- 0
+    D1 <- egg.dev.rate(Tgood)
+    D2 <- larva.dev.rate(Tgood)
+    D3 <- pupa.dev.rate(Tgood)
+    M1 <- egg.mort.rate(Tgood)
+    M2 <- larva.mort.rate(Tgood)
+    M3 <- pupa.mort.rate(Tgood)
+    M4 <- female.mort.rate(Tgood)
+    phi <- fem.fec(Tgood)
+    
+    mu_R  <- 0.003
+    R_star <- gamma / mu_R
+    
+    # apply egg‑stage reduction (oviposition reduction)
+    if (egg_reduction > 0) {
+      phi <- phi * (1 - egg_reduction)
+    }
+    
+    # apply larval‑stage reduction (increase mortality)
+    if (larvae_reduction > 0) {
+      M2 <- M2 * (1 / (1 - larvae_reduction))
+    }
+    
+    R0_good <- phi * R_star * (D1 * D2 * D3) /
+      ((D1 + M1) * (D2 + M2) * (D3 + M3) * M4)
+    
+    R0_good[is.nan(R0_good) | R0_good < 0] <- 0
+    rvec[good] <- R0_good
+  }
+  
+  return(rvec)
+}
+
+# Example usage:
+temperature <- seq(10, 45, by = 0.1)
+
+R_I_baseline    <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.0,
+                                            egg_reduction    = 0.0)
+R_I_egg_ctrl    <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.0,
+                                            egg_reduction    = 0.50)
+R_I_larvae_ctrl <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.70,
+                                            egg_reduction    = 0.0)
+R_I_IPM         <- risk.index_temp_resource(temperature,
+                                            larvae_reduction = 0.70,
+                                            egg_reduction    = 0.50)
+
+# Plot all scenarios:
+plot(temperature, R_I_baseline,
+     type = "l", lwd = 2, col = "red",
+     xlab = "Temperature (°C)",
+     ylab = expression(italic(Busseola~fusca) ~ R[0]),
+     main = "")
+lines(temperature, R_I_egg_ctrl,
+      type = "l", lwd = 2, col = "orange")
+lines(temperature, R_I_larvae_ctrl,
+      type = "l", lwd = 2, col = "yellow")
+lines(temperature, R_I_IPM,
+      type = "l", lwd = 2, col = "lightgreen")
+abline(h = 1, lty = 2, col = "purple")
+legend("topright",
+       legend = c("Baseline",
+                  "50% Intercropping",
+                  "70% Biopesticide",
+                  "IPM: both controls"),
+       col    = c("red", "orange", "yellow", "lightgreen"),
+       lwd    = 2)
+scenarios <- list(
+  Baseline    = R_I_baseline,
+  EggControl  = R_I_egg_ctrl,
+  LarvaeControl = R_I_larvae_ctrl,
+  IPM         = R_I_IPM
+)
+
+for (nm in names(scenarios)) {
+  R0_vec <- scenarios[[nm]]
+  idx_above1 <- which(R0_vec > 1)
+  
+  if (length(idx_above1) > 0) {
+    min_t <- temperature[min(idx_above1)]
+    max_t <- temperature[max(idx_above1)]
+    peak_R0_val <- max(R0_vec, na.rm = TRUE)
+    peak_t <- temperature[which.max(R0_vec)]
+    
+    cat(nm, " — R₀ > 1 between:", round(min_t, 1), "°C and", round(max_t, 1), "°C; ",
+        "Peak R₀:", round(peak_R0_val, 2), "at", round(peak_t, 1), "°C\n")
+  } else {
+    cat(nm, " — R₀ never exceeds 1 in the evaluated temperature range.\n")
+  }
+}
+
