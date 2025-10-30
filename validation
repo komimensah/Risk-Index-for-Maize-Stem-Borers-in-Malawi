@@ -1,0 +1,587 @@
+#BUSSUOLA
+# Clear memory
+rm(list = ls())
+cat("\014")
+setwd("/Users/kagboka/Desktop/New_stemborer/")
+# ------------------------------------------------------------
+# DEVELOPMENT RATE FUNCTIONS
+# (these you already have)
+# ------------------------------------------------------------
+egg.dev.rate <- function(x) {
+  alph = 117.3314; k = 3474.168; b = 0.1303
+  Tmin = 4.5429; Tmax = 56.7699; Dt = 6.2207
+  r <- alph * (1 / (1 + k * exp(-b * (x - Tmin))) -
+                 exp(-(Tmax - (x - Tmin)) / Dt))
+  r[is.nan(r) | r < 0] <- 0
+  return(pmin(r, 1))
+}
+
+larva.dev.rate <- function(x) {
+  Y = 0.0012; Tmax = 31.2287; p = 0.1163; v = 1.6537
+  r <- Y * (exp(p * x) - exp((p * Tmax) - (Tmax - x) / v))
+  r[is.nan(r) | r < 0] <- 0
+  return(pmin(r, 1))
+}
+
+pupa.dev.rate <- function(x) {
+  Y = 0.006; Tmax = 33.0391; p = 0.1641; v = 5.2269
+  r <- Y * (exp(p * x) - exp((p * Tmax) - (Tmax - x) / v))
+  r[is.nan(r) | r < 0] <- 0
+  return(pmin(r, 1))
+}
+
+# ------------------------------------------------------------
+# MORTALITY RATE FUNCTIONS
+# ------------------------------------------------------------
+egg.mort.rate <- function(x) {
+  b1 = 5.0138; b2 = -0.4869; b3 = 0.01
+  m <- exp(b1 + b2 * x + b3 * x^2)
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+larva.mort.rate <- function(x) {
+  b1 = 3.8718; b2 = -0.3872; b3 = 0.0078
+  m <- exp(b1 + b2 * x + b3 * x^2)
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+pupa.mort.rate <- function(x) {
+  b1 = 7.6441; b2 = -0.7716; b3 = 0.0157
+  m <- exp(b1 + b2 * x + b3 * x^2)
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+female.mort.rate <- function(x) {
+  c1 = 79.0854; k1 = 8.1594; k2 = -0.073
+  m <- c1 / (1 + exp(k1 + k2 * x))
+  m[is.nan(m) | m < 0] <- 0
+  return(pmin(m, 1))
+}
+
+# ------------------------------------------------------------
+# FECUNDITY FUNCTIONS
+# ------------------------------------------------------------
+fem.tot.ovip <- function(x) {
+  b1 = -3.7017; b2 = 0.8449; b3 = -0.0188
+  r <- exp(b1 + b2 * x + b3 * x^2)
+  r[is.nan(r) | r < 0] <- 0
+  return(r)
+}
+
+fem.fec <- function(x) {
+  total_eggs <- fem.tot.ovip(x)
+  lifespan <- 1 / female.mort.rate(x)
+  fec <- total_eggs / lifespan
+  fec[is.nan(fec) | fec < 0] <- 0
+  return(fec)
+}
+
+# ------------------------------------------------------------
+# TEMPERATURE‐RESPONSE (Yan & Hunt style)
+# ------------------------------------------------------------
+r_yan <- function(T, Rmax = 0.04545, Topt = 31.4, Tmax = 41) {
+  T <- as.numeric(T)
+  r <- ifelse(T < 0 | T > Tmax, 0,
+              Rmax * ((Tmax - T) / (Tmax - Topt)) *
+                ((T / Topt)^(Topt / (Tmax - Topt))))
+  r[is.nan(r) | r < 0] <- 0
+  return(r)
+}
+
+# ------------------------------------------------------------
+# R0 (Risk Index) FUNCTION USING TEMPERATURE & RESOURCE
+# ------------------------------------------------------------
+risk.index_temp_resource <- function(Tvec) {
+  rvec <- rep(NA_real_, length(Tvec))
+  good <- !is.na(Tvec)
+  
+  if (any(good)) {
+    Tgood <- Tvec[good]
+    
+    # Temperature‐dependent components:
+    gamma <- r_yan(Tgood)
+    gamma[is.nan(gamma) | gamma < 0] <- 0
+    D1 <- egg.dev.rate(Tgood)
+    D2 <- larva.dev.rate(Tgood)
+    D3 <- pupa.dev.rate(Tgood)
+    M1 <- egg.mort.rate(Tgood)
+    M2 <- larva.mort.rate(Tgood)
+    M3 <- pupa.mort.rate(Tgood)
+    M4 <- female.mort.rate(Tgood)
+    phi <- fem.fec(Tgood)
+    
+    # RESOURCE PARAMETERS (you need to supply realistic values)
+    
+    mu_R  <- 0.003   # example: resource decay rate
+    R_star <- gamma / mu_R
+    
+    # Option: adult‐induced resource boost could be included,
+    # but for simplicity we use baseline R_star only.
+    
+    # Now compute R0 with the derived formula:
+    #The exit rate from larval stage: how fast larvae leave (either by becoming pupae or dying)
+    #If this is high → larvae turn over quickly → many “waves” of larvae over the year → higher cumulative counts → positive correlation.
+    
+    #((D1 + M1) * (D2 + M2) * (D3 + M3) * M4)
+    R0_good <-  
+      (D2 + M2) 
+    # Ensuring no negative or NaNs:
+    R0_good[is.nan(R0_good) | R0_good < 0] <- 0
+    rvec[good] <- R0_good
+  }
+  
+  return(rvec)
+}
+
+# Example usage
+temperature <- seq(10, 45, by = 0.1)
+R_I_temp_resource <- risk.index_temp_resource(temperature)
+
+plot(temperature, R_I_temp_resource,
+     type = "l", lwd = 2, col = "darkgreen",
+     xlab = "Temperature (°C)",
+     ylab = bquote(R[0] ~ " (resource‐linked)"),
+     main = "R0 vs Temperature (with resource)")
+
+abline(h = 1, lty = 2, col = "red")
+
+# ————————————————————————————————————
+# LOAD REQUIRED LIBRARIES
+# ————————————————————————————————————
+library(terra)
+library(sf)
+library(dplyr)
+library(caret)
+# ————————————————————————————————————
+# LOAD MONTHLY RASTER STACKS
+# ————————————————————————————————————
+#avg_temp <- "/Users/kagboka/Desktop/African armyworm paper/tmean_LTM_Average 1 (1)/"# terraclim
+
+avg_temp <-'/Users/kagboka/Downloads/tavg_ltm 1 (1)/'#Chelsa
+tavg_stack <- rast(list.files(avg_temp, full.names = TRUE, pattern = ".tif$"))
+#tavg_stack<-rast('/Users/kagboka/Desktop/Red_palm_weevel/LST_Tmin_Rasters/bio_clim_var/BIO5.tif')
+#tavg_stack<-rast('/Users/kagboka/Desktop/Red_palm_weevel/LST_Tmin_Rasters/LSTNight.tif')
+# ————————————————————————————————————
+# ALIGN AND MASK TO MALAWI
+# ————————————————————————————————————
+malawi <- st_read("/Users/kagboka/Desktop/New_stemborer/Study_Area/Study_Area.shp")
+
+# 2. Filter for Malawi and Zambia using ISO3 codes
+study_MW_ZM <- malawi %>%
+  filter(ISO3 %in% c("MWI", "ZMB"))
+
+# 3. Inspect the result
+print(unique(study_MW_ZM$ISO3))
+print(unique(study_MW_ZM$ADM0_NAME))
+
+# 4. Save the filtered shapefile
+st_write(study_MW_ZM, 
+         "/Users/kagboka/Desktop/New_stemborer/Study_Area_Malawi_Zambia.shp",
+         delete_dsn = TRUE)  # delete existing if present
+
+malawi_vect <- vect(study_MW_ZM)
+
+#ndvi_stack <- resample(ndvi_stack, tavg_stack, method = "bilinear")
+
+tavg_mwi <- mask(crop(tavg_stack, malawi_vect), malawi_vect)
+#ndvi_mwi <- mask(crop(ndvi_stack, malawi_vect), malawi_vect)
+
+# ————————————————————————————————————
+# COMPUTE MEAN ACROSS 12 MONTHS
+# ————————————————————————————————————
+tavg_mean <- mean(tavg_mwi)
+
+plot(tavg_mean)
+# OPTIONAL: Replace NA with zero to prevent computation issues
+tavg_clean <- ifel(is.na(tavg_mean), 0, tavg_mean)
+#ndvi_clean <- ifel(is.na(ndvi_mean), 0, ndvi_mean)
+
+# ————————————————————————————————————
+# COMPUTE SINGLE-LAYER RISK INDEX
+# ————————————————————————————————————
+
+RI_single_B <- lapp(c(tavg_clean), fun = risk.index_temp_resource)
+plot(RI_single_B )
+
+library(terra)
+
+# 1. Load the cropland raster (land cover / land use)
+cropland <- rast('/Users/kagboka/Desktop/Stomoxys calcitrans/ESA_LULC_1km.tif')
+#cropland<-rast('/Users/kagboka/Desktop/New_stemborer/AFCD_2022.tif')
+#plot(cropland2)
+#cropland3<-rast('/Users/kagboka/Desktop/African armyworm paper/maize_physical_area_africa/2017/spam2017V2r1_SSA_A_MAIZ_S.tif')
+# 2. Binarize cropland: set to 1 where value is 10 or 20, else 0 / NA
+cropland_bin <- classify(cropland, 
+                         rcl = matrix(c(
+                           10, 10, 1,
+                           20, 20, 1,
+                           80, 80, 1,
+                           30, 30, 1,
+                           -Inf, 9, 0,
+                           11, 19, 0,
+                           21, Inf, 0
+                         ), ncol = 3, byrow = TRUE))
+
+#cropland3<-cropland3>0
+#cropland_bin <- mask(crop(cropland_bin, malawi_vect), malawi_vect)
+
+cropland_bin <- mask(crop(cropland_bin, malawi_vect), malawi_vect)
+plot(cropland_bin)
+cropland_bin<-cropland_bin>0
+plot(cropland_bin)
+# 3. Load your model output raster (risk index, etc.)
+#model_risk <- epi_prob_B
+model_risk <-RI_single_B
+# Align / resample if needed so they match
+cropland_bin2 <- resample(cropland_bin, model_risk, method = "near")
+
+# 4. Mask model output so you only keep cropland areas
+model_on_cropland <- mask(model_risk, cropland_bin2, maskvalues = 0)
+plot(model_on_cropland)
+# 5. Plot or write result
+plot(model_on_cropland, main = "Risk over Cropland")
+
+############
+library(terra)
+library(sf)
+library(modEvA)
+
+# 1. Read data
+df <- read.csv("/Users/kagboka/Desktop/New_stemborer/final Stemborer data.csv",
+               stringsAsFactors = FALSE)
+
+# Suppose column with counts is “Busseola.fusca”
+# If you still want presence/absence later:
+df$presence <- ifelse(!is.na(df$Busseola.fusca) & df$Busseola.fusca > 0, 1, 0)
+
+# 2. Load raster of predicted risk (continuous)
+risk_rast <- model_on_cropland   # your raster, continuous values
+pts_sf <- st_as_sf(df, coords = c("lon", "lat"), crs = crs(risk_rast))
+ex <- terra::extract(risk_rast, vect(pts_sf))
+df$predicted_risk <- ex[,2]
+plot(risk_rast)
+# 3. Prepare observed & predicted continuous vectors
+obs_cont <- df$Busseola.fusca      # the actual counts (or abundance)
+pred_cont <- df$predicted_risk      # continuous predicted risk
+
+# Remove cases with NA
+ok <- !is.na(obs_cont) & !is.na(pred_cont)
+obs2 <- obs_cont[ok]
+pred2 <- pred_cont[ok]
+
+# 4. Evaluate correlations
+pearson_r <- cor(obs2, pred2, method = "pearson")
+spearman_r <- cor(obs2, pred2, method = "spearman")
+cat("Pearson r:", pearson_r, "\n")
+cat("Spearman rho:", spearman_r, "\n")
+###########################CHILO
+#Chilo
+# ------------------------------------------------------------
+# CLEAR MEMORY AND CONSOLE
+# ------------------------------------------------------------
+rm(list = ls())
+cat("\014")
+
+# ------------------------------------------------------------
+# DEVELOPMENT RATES: Logan 1 (Model 17)
+# ------------------------------------------------------------
+egg.dev.rate <- function(x) {
+  Y = 0.015; Tmax = 38.916; p = 0.155; v = 5.766
+  r <- Y * (exp(p * x) - exp(p * Tmax - (Tmax - x)/v))
+  r[x < 0 | is.nan(r)] <- 0
+  return(pmax(r, 0))
+}
+
+larva.dev.rate <- function(x) {
+  Y = 0.003; Tmax = 37.581; p = 0.17; v = 5.504
+  r <- Y * (exp(p * x) - exp(p * Tmax - (Tmax - x)/v))
+  r[x < 0 | is.nan(r)] <- 0
+  return(pmax(r, 0))
+}
+
+pupa.dev.rate <- function(x) {
+  Y = 0.012; Tmax = 38.048; p = 0.165; v = 5.66
+  r <- Y * (exp(p * x) - exp(p * Tmax - (Tmax - x)/v))
+  r[x < 0 | is.nan(r)] <- 0
+  return(pmax(r, 0))
+}
+
+# ------------------------------------------------------------
+# MORTALITY RATES
+# ------------------------------------------------------------
+
+# Egg Mortality: Marc (Model 35)
+egg.mort.rate <- function(x){
+  a1 = 3.518; b1 = -0.183; a2 = -14.119; b2 = 0.416
+  m <- (1 - exp(-exp(a1 + b1 * x))) + (1 - exp(-exp(a2 + b2 * x)))
+  return(pmin(pmax(m, 0), 1))
+}
+
+# Larva Mortality: Gompertz (Model 6)
+larva.mort.rate <- function(x){
+  a1 = 5.537; b1 = -0.124; a2 = 0; b2 = 0.563
+  m <- a1 * exp(b1 * x) + a2 * exp(b2 * x)
+  return(pmin(pmax(m, 0), 1))
+}
+
+# Pupa Mortality: Wang 3 (Model 28)
+pupa.mort.rate <- function(x){
+  Topt = 28.084; Bl = 1.467; Bh = 0.878; H = 0.00001
+  term <- (1 + exp(-(x - Topt)/Bl)) * (1 + exp(-(Topt - x)/Bh)) * H
+  m <- 1 - 1 / term
+  m[is.nan(m) | is.infinite(m)] <- 1
+  return(pmin(pmax(m, 0), 1))
+}
+
+# Adult Mortality (Female): Hilbert & Logan 3 (Model 56)
+adult.mort.rate <- function(x){
+  trid = -632358.654; Tmax = 38.567; Tmin = 23.682; D = -584677784.227; Dt = 0.017; Smin = 0.09
+  r <- trid * (((x - Tmin)^2)/((x - Tmin)^2 + D) - exp(-(Tmax - (x - Tmin))/Dt)) + Smin
+  r[is.nan(r) | is.infinite(r)] <- 1
+  return(pmin(pmax(r, 0), 1))
+}
+
+# ------------------------------------------------------------
+# FECUNDITY FUNCTIONS
+# ------------------------------------------------------------
+
+# Total fecundity: Brière 2 (Model 40)
+fem.total.ovip <- function(x){
+  a = 0; To = -69.689; Tl = 39.639; d = 1.395
+  r <- exp(a * x * (x - To) * (Tl - x)^(1/d))
+  r[is.nan(r) | is.infinite(r)] <- 0
+  return(pmin(pmax(r, 0), 1))
+}
+
+# Convert total fecundity to daily oviposition rate
+fem.daily.ovip <- function(x){
+  total <- fem.total.ovip(x)
+  lifespan <- 1 / adult.mort.rate(x)
+  daily <- total / lifespan
+  daily[is.nan(daily) | daily < 0] <- 0
+  return(pmin(daily, 1))
+}
+
+
+# ------------------------------
+# Temperature‐response (Yan & Hunt style)
+# ------------------------------
+r_yan <- function(T, Rmax = 0.04545, Topt = 31.4, Tmax = 41) {
+  # If T is outside [0, Tmax], growth is zero
+  r <- ifelse(T < 0 | T > Tmax, 0,
+              Rmax * ((Tmax - T) / (Tmax - Topt)) *
+                ( (T / Topt)^( Topt / (Tmax - Topt) )) )
+  return(r)
+}
+# ------------------------------------------------------------
+# R0 (Risk Index) FUNCTION USING TEMPERATURE & RESOURCE
+# ------------------------------------------------------------
+risk.index_temp_resource <- function(Tvec) {
+  rvec <- rep(NA_real_, length(Tvec))
+  good <- !is.na(Tvec)
+  
+  if (any(good)) {
+    Tgood <- Tvec[good]
+    
+    # Temperature‐dependent components:
+    gamma <- r_yan(Tgood)
+    gamma[is.nan(gamma) | gamma < 0] <- 0
+    D1 <- egg.dev.rate(Tgood)
+    D2 <- larva.dev.rate(Tgood)
+    D3 <- pupa.dev.rate(Tgood)
+    M1 <- egg.mort.rate(Tgood)
+    M2 <- larva.mort.rate(Tgood)
+    M3 <- pupa.mort.rate(Tgood)
+    M4 <- adult.mort.rate(Tgood)
+    phi <- fem.daily.ovip(Tgood)
+    
+    # RESOURCE PARAMETERS (you need to supply realistic values)
+    
+    mu_R  <- 0.001   # example: resource decay rate
+    R_star <- gamma / mu_R
+    
+    # Option: adult‐induced resource boost could be included,
+    # but for simplicity we use baseline R_star only.
+    
+    # Now compute R0 with the derived formula:
+    R0_good <- (D2 + M2) 
+    
+    # Ensuring no negative or NaNs:
+    R0_good[is.nan(R0_good) | R0_good < 0] <- 0
+    rvec[good] <- R0_good
+  }
+  
+  return(rvec)
+}
+
+# Example usage
+temperature <- seq(10, 45, by = 0.1)
+R_I_temp_resource <- risk.index_temp_resource(temperature)
+
+plot(temperature, R_I_temp_resource,
+     type = "l", lwd = 2, col = "darkgreen",
+     xlab = "Temperature (°C)",
+     ylab = expression(italic(Chilo~partellus) ~ R[0]),,
+     main = "")
+
+abline(h = 1, lty = 2, col = "red")
+
+
+# Find temperature range where R0 > 1
+above_threshold_idx <- which(R_I_temp_resource > 1)
+temps_above_1 <- temperature[above_threshold_idx]
+
+# Get min and max temperature where R0 > 1
+min_temp_above_1 <- min(temps_above_1)
+max_temp_above_1 <- max(temps_above_1)
+
+# Find temperature of peak R0
+peak_idx <- which.max(R_I_temp_resource)
+peak_temp <- temperature[peak_idx]
+peak_R0 <- R_I_temp_resource[peak_idx]
+
+# Print results
+cat("R0 > 1 between:", round(min_temp_above_1, 1), "°C and", round(max_temp_above_1, 1), "°C\n")
+cat("Peak R0:", round(peak_R0, 2), "at", round(peak_temp, 1), "°C\n")
+
+
+# ————————————————————————————————————
+# LOAD REQUIRED LIBRARIES
+# ————————————————————————————————————
+library(terra)
+library(sf)
+library(dplyr)
+library(caret)
+# ————————————————————————————————————
+# LOAD MONTHLY RASTER STACKS
+# ————————————————————————————————————
+#avg_temp <- "/Users/kagboka/Desktop/African armyworm paper/tmean_LTM_Average 1 (1)/"#Terraclimate
+
+#avg_temp <-'/Users/kagboka/Downloads/tavg_ltm 1 (1)/'#Chelsa
+#tavg_stack <- rast(list.files(avg_temp, full.names = TRUE, pattern = ".tif$"))
+tavg_stack<-rast('/Users/kagboka/Desktop/Red_palm_weevel/LST_Tmin_Rasters/bio_clim_var/BIO5.tif')#(Bioclimate)
+#tavg_stack<-rast('/Users/kagboka/Desktop/Red_palm_weevel/LST_Tmin_Rasters/LSTNight.tif')#RS
+# ————————————————————————————————————
+# ALIGN AND MASK TO MALAWI
+# ————————————————————————————————————
+malawi <- st_read("/Users/kagboka/Desktop/New_stemborer/Study_Area/Study_Area.shp")
+
+# 2. Filter for Malawi and Zambia using ISO3 codes
+study_MW_ZM <- malawi %>%
+  filter(ISO3 %in% c("MWI", "ZMB"))
+
+# 3. Inspect the result
+print(unique(study_MW_ZM$ISO3))
+print(unique(study_MW_ZM$ADM0_NAME))
+
+# 4. Save the filtered shapefile
+st_write(study_MW_ZM, 
+         "/Users/kagboka/Desktop/New_stemborer/Study_Area_Malawi_Zambia.shp",
+         delete_dsn = TRUE)  # delete existing if present
+
+malawi_vect <- vect(study_MW_ZM)
+
+#ndvi_stack <- resample(ndvi_stack, tavg_stack, method = "bilinear")
+
+tavg_mwi <- mask(crop(tavg_stack, malawi_vect), malawi_vect)
+#ndvi_mwi <- mask(crop(ndvi_stack, malawi_vect), malawi_vect)
+
+# ————————————————————————————————————
+# COMPUTE MEAN ACROSS 12 MONTHS
+# ————————————————————————————————————
+tavg_mean <- mean(tavg_mwi)
+
+plot(tavg_mean)
+# OPTIONAL: Replace NA with zero to prevent computation issues
+tavg_clean <- ifel(is.na(tavg_mean), 0, tavg_mean)
+#ndvi_clean <- ifel(is.na(ndvi_mean), 0, ndvi_mean)
+
+# ————————————————————————————————————
+# COMPUTE SINGLE-LAYER RISK INDEX
+# ————————————————————————————————————
+
+RI_single_C <- lapp(c(tavg_clean), fun = risk.index_temp_resource)
+plot(RI_single_C )
+# ————————————————————————————————————
+# CLASSIFY AS PROBABILITY OF EPIDEMIC
+# ————————————————————————————————————
+# Epidemic probability: 0 if RI ≤ 1, else 1 - 1/RI
+#epi_prob_B <- ifel(RI_single_B <= 1, 0, 1 - 1 / RI_single_B)
+#plot(epi_prob_B )
+# ————————————————————————————————————
+# EXPORT RESULTS
+# ————————————————————————————————————
+
+library(terra)
+
+# 1. Load the cropland raster (land cover / land use)
+cropland <- rast('/Users/kagboka/Desktop/Stomoxys calcitrans/ESA_LULC_1km.tif')
+#cropland<-rast('/Users/kagboka/Desktop/New_stemborer/AFCD_2022.tif')
+#plot(cropland2)
+#cropland3<-rast('/Users/kagboka/Desktop/African armyworm paper/maize_physical_area_africa/2017/spam2017V2r1_SSA_A_MAIZ_S.tif')
+# 2. Binarize cropland: set to 1 where value is 10 or 20, else 0 / NA
+cropland_bin <- classify(cropland, 
+                         rcl = matrix(c(
+                           10, 10, 1,
+                           20, 20, 1,
+                           80, 80, 1,
+                           30, 30, 1,
+                           -Inf, 9, 0,
+                           11, 19, 0,
+                           21, Inf, 0
+                         ), ncol = 3, byrow = TRUE))
+
+#cropland3<-cropland3>0
+#cropland_bin <- mask(crop(cropland_bin, malawi_vect), malawi_vect)
+
+cropland_bin <- mask(crop(cropland_bin, malawi_vect), malawi_vect)
+plot(cropland_bin)
+cropland_bin<-cropland_bin>0
+plot(cropland_bin)
+# 3. Load your model output raster (risk index, etc.)
+#model_risk <- epi_prob_B
+model_risk <-RI_single_C
+# Align / resample if needed so they match
+cropland_bin2 <- resample(cropland_bin, model_risk, method = "near")
+
+# 4. Mask model output so you only keep cropland areas
+model_on_cropland <- mask(model_risk, cropland_bin2, maskvalues = 0)
+plot(model_on_cropland)
+# 5. Plot or write result
+plot(model_on_cropland, main = "Risk over Cropland")
+############
+library(terra)
+library(sf)
+library(modEvA)
+
+# 1. Read data
+df <- read.csv("/Users/kagboka/Desktop/New_stemborer/final Stemborer data.csv",
+               stringsAsFactors = FALSE)
+
+# Suppose column with counts is “Chilo.partellus”
+# If you still want presence/absence later:
+df$presence <- ifelse(!is.na(df$Chilo.partellus) & df$Chilo.partellus > 0, 1, 0)
+
+# 2. Load raster of predicted risk (continuous)
+risk_rast <- model_on_cropland   # your raster, continuous values
+pts_sf <- st_as_sf(df, coords = c("lon", "lat"), crs = crs(risk_rast))
+ex <- terra::extract(risk_rast, vect(pts_sf))
+df$predicted_risk <- ex[,2]
+plot(risk_rast)
+# 3. Prepare observed & predicted continuous vectors
+obs_cont <- df$Chilo.partellus      # the actual counts (or abundance)
+pred_cont <- df$predicted_risk      # continuous predicted risk
+
+# Remove cases with NA
+ok <- !is.na(obs_cont) & !is.na(pred_cont)
+obs2 <- obs_cont[ok]
+pred2 <- pred_cont[ok]
+
+# 4. Evaluate correlations
+pearson_r <- cor(obs2, pred2, method = "pearson")
+spearman_r <- cor(obs2, pred2, method = "spearman")
+cat("Pearson r:", pearson_r, "\n")
+cat("Spearman rho:", spearman_r, "\n")
