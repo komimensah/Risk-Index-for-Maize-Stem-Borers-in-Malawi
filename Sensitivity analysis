@@ -1,0 +1,132 @@
+# Yan & Hunt temperature-response function
+r_yan <- function(T, Rmax = 1, Topt = 25, Tmax = 40) {
+  # ensure T ≤ Tmax
+  r <- ifelse(T < 0 | T > Tmax, 0,
+              Rmax * ((Tmax - T) / (Tmax - Topt)) *
+                (T / Topt)^(Topt / (Tmax - Topt)))
+  return(r)
+}
+
+# Example parameters
+Rmax <-  0.04545 #d–1 
+Topt <- 31.4
+Tmax <- 41
+
+# Temperature sequence
+temps <- seq(0, 45, by = 0.1)
+
+# Compute rates
+rates <- r_yan(temps, Rmax = Rmax, Topt = Topt, Tmax = Tmax)
+
+# Plot
+plot(temps, rates, type = "l", lwd = 2, col = "blue",
+     xlab = "Temperature (°C)", ylab = "r(T) — normalized rate",
+     main = "Yan & Hunt Temperature Response Curve")
+abline(v = Topt, lty = 2, col = "red")
+text(Topt + 1, Rmax * 0.9, paste("Topt =", Topt), col = "red")
+#######################################
+# ------------------------------------------------------------
+# FULL PRCC ANALYSIS SCRIPT BASED ON compute_R0()
+# ------------------------------------------------------------
+library(lhs)
+library(sensitivity)
+
+# 1. Define R0 function
+compute_R0 <- function(gamma, mu_R, phi, D1, M1, D2, M2, D3, M3, M4) {
+  R0_val <- phi * (gamma / mu_R) * (D1 * D2 * D3) /
+    ((D1 + M1) * (D2 + M2) * (D3 + M3) * M4)
+  return(R0_val)
+}
+
+# 2. Number of simulations
+n_sims <- 1000
+
+# 3. Define parameter ranges
+param_ranges <- data.frame(
+  min = c(
+    gamma = 0.0001,
+    mu_R  = 0.0001,
+    phi   = 0.1,
+    D1    = 0.01,
+    M1    = 0.001,
+    D2    = 0.01,
+    M2    = 0.001,
+    D3    = 0.01,
+    M3    = 0.001,
+    M4    = 0.001
+  ),
+  max = c(
+    gamma = 0.01,
+    mu_R  = 0.01,
+    phi   = 10,
+    D1    = 1,
+    M1    = 0.5,
+    D2    = 1,
+    M2    = 0.5,
+    D3    = 1,
+    M3    = 0.5,
+    M4    = 0.5
+  )
+)
+
+# 4. Latin Hypercube Sampling
+set.seed(999)
+lhs_mat <- randomLHS(n_sims, nrow(param_ranges))
+param_samples <- as.data.frame(lhs_mat)
+colnames(param_samples) <- rownames(param_ranges)
+
+# Transform to actual ranges
+for (j in seq_len(ncol(param_samples))) {
+  param_samples[, j] <- qunif(lhs_mat[, j], min = param_ranges[j, "min"], max = param_ranges[j, "max"])
+}
+
+# 5. Evaluate R0 for all parameter combinations
+R0_vals <- numeric(n_sims)
+for (i in seq_len(n_sims)) {
+  p <- param_samples[i, ]
+  R0_vals[i] <- compute_R0(
+    gamma = p$gamma, mu_R = p$mu_R, phi = p$phi,
+    D1 = p$D1, M1 = p$M1, D2 = p$D2, M2 = p$M2,
+    D3 = p$D3, M3 = p$M3, M4 = p$M4
+  )
+}
+
+# 6. Compute PRCC
+prcc_result <- pcc(X = param_samples, y = R0_vals, rank = TRUE, nboot = 1000)
+
+# 7. Plot PRCC results as barplot with mathematical symbols
+prcc_vals <- prcc_result$PRCC[, 1]
+param_names <- rownames(prcc_result$PRCC)
+
+# Sort values
+sorted_idx <- order(abs(prcc_vals), decreasing = TRUE)
+prcc_vals <- prcc_vals[sorted_idx]
+param_names <- param_names[sorted_idx]
+
+# Create symbolic labels
+symbolic_labels <- c(
+  expression(phi),                 # female daily oviposition rate
+  expression(M[4]),                # adult mortality
+  expression(mu[R]),              # resource decay
+  expression(gamma),              # resource gain
+  expression(D[3]),               # pupal dev rate
+  expression(D[1]),               # egg dev rate
+  expression(D[2]),               # larval dev rate
+  expression(M[2]),               # larval mort rate
+  expression(M[1]),               # egg mort rate
+  expression(M[3])                # pupal mort rate
+)[sorted_idx]
+
+# Plot
+par(mar = c(5, 10, 4, 2))
+barplot(
+  prcc_vals,
+  names.arg = symbolic_labels,
+  horiz = TRUE,
+  las = 1,
+  col = ifelse(prcc_vals > 0, "steelblue", "firebrick"),
+  xlim = c(-1, 1),
+  main = "",
+  xlab = "Partial Rank Correlation Coefficient"
+)
+abline(v = 0, lty = 2, col = "gray30")
